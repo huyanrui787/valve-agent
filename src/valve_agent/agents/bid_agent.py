@@ -19,9 +19,12 @@ from ..engines import (
     QualificationMatcher,
     WasteBidChecker,
 )
+from ..documents import TenderDocumentParser, export_bid_docx, load_document
 from ..knowledge import KnowledgeBase
-from ..llm import LLMProvider, OfflineProvider
+from ..llm import LLMProvider, get_provider
 from ..models import Product, Qualification, TenderRequirement, TrackRecord
+from ..models.tender import ParsedTender
+from ..rag import RagRetriever
 
 
 class BidPackage(BaseModel):
@@ -44,12 +47,24 @@ class BidPackage(BaseModel):
 class BidAgent:
     """智能标书 Agent。"""
 
-    def __init__(self, kb: KnowledgeBase, llm: LLMProvider | None = None) -> None:
+    def __init__(
+        self,
+        kb: KnowledgeBase,
+        llm: LLMProvider | None = None,
+        retriever: RagRetriever | None = None,
+    ) -> None:
         self.kb = kb
         self.compliance = BidComplianceEngine()
         self.checker = WasteBidChecker(kb)
         self.matcher = QualificationMatcher(kb)
-        self.llm = llm or OfflineProvider()
+        self.llm = llm or get_provider()
+        self.retriever = retriever or RagRetriever(kb)
+        self.tender_parser = TenderDocumentParser()
+
+    def parse_tender_file(self, path: str) -> ParsedTender:
+        """加载并解析招标文件(PDF/Word/文本)。"""
+        text = load_document(path)
+        return self.tender_parser.parse(text, source=str(path))
 
     def build_package(
         self,
@@ -87,15 +102,50 @@ class BidAgent:
             required_qual_categories=required_qual_categories,
             min_track_records=min_track_records, industry=industry)
 
-        # 5. 技术方案初稿(LLM 表达层)
+        # 5. 技术方案初稿(RAG 上下文 + LLM 表达层)
         proposal = ""
         if write_proposal:
-            proposal = self.llm.complete(
-                f"为型号 {product.code}({product.name})撰写技术方案概述",
-                system="你是阀门技术方案工程师")
+            ctx = self.retriever.context_for_proposal(
+                product.code, f"{product.name} {product.valve_type.value}")
+            prompt = f"为型号 {product.code}({product.name})撰写技术方案概述"
+            if ctx:
+                prompt += f"\n\n参考知识:\n{ctx}"
+            proposal = self.llm.complete(prompt, system="你是阀门技术方案工程师")
 
         return BidPackage(
             product_code=product.code, product_name=product.name,
             deviation_table=dt, compliance_report=report,
             matched_qualifications=matched_quals, matched_records=matched_records,
             tech_proposal=proposal)
+
+    def build_from_tender(
+        self,
+        tender: ParsedTender,
+        product: Product,
+        bid_date: date | None = None,
+        chosen_body: str | None = None,
+        write_proposal: bool = True,
+    ) -> BidPackage:
+        """用解析出的招标要求生成应答包(RAG 已索引招标文本)。"""
+        self.retriever.ensure_indexed(tender)
+        brief = tender.brief
+        reqs = tender.requirements or []
+        return self.build_package(
+            product, reqs, bid_date=bid_date or brief.bid_deadline,
+            chosen_body=chosen_body,
+            required_qual_categories=brief.required_qual_categories or None,
+            min_track_records=brief.min_track_records,
+            industry=brief.industry_hint or None,
+            write_proposal=write_proposal,
+        )
+
+    def export_docx(
+        self,
+        package: BidPackage,
+        path: str,
+        *,
+        tender: ParsedTender | None = None,
+        customer: str = "",
+    ):
+        """导出 Word 投标初稿。"""
+        return export_bid_docx(package, path, tender=tender, customer=customer)

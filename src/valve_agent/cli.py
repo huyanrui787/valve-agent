@@ -16,9 +16,11 @@ from rich.table import Table
 from .agents import BidAgent, QuoteAgent, QuoteRequestLine
 from .engines import Verdict
 from .engines.waste_bid import RiskLevel
+from .integrations import FileSyncAdapter
 from .knowledge import build_demo_kb
-from .llm import ConditionParser
+from .llm import ConditionParser, provider_status
 from .models import CompareOp, TenderRequirement
+from .rag import RagRetriever, get_embedder
 
 app = typer.Typer(
     help="阀门企业智能标书与报价 Agent — 确定性引擎 demo",
@@ -288,6 +290,165 @@ def _demo_requirements() -> list[TenderRequirement]:
     ]
 
 
+@app.command(name="parse-tender")
+def parse_tender(
+    path: str = typer.Argument(..., help="招标文件路径 .pdf/.docx/.txt"),
+) -> None:
+    """解析招标文件 → 要点清单 + 技术要求 + 废标摘录。"""
+    kb = build_demo_kb()
+    ba = BidAgent(kb)
+    try:
+        tender = ba.parse_tender_file(path)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    brief = tender.brief
+    console.print(Panel.fit(
+        f"来源:{tender.source}\n"
+        f"标题:{brief.title or '(未识别)'}\n"
+        f"投标截止:{brief.bid_deadline or '未识别'}\n"
+        f"资质要求:{', '.join(brief.required_qual_categories) or '无'}\n"
+        f"最少业绩:{brief.min_track_records} 项  行业:{brief.industry_hint or '未识别'}\n"
+        f"技术要求:{len(tender.requirements)} 条  废标摘录:{len(tender.waste_clauses)} 条",
+        title="招标解析摘要", border_style="blue"))
+    if brief.key_points:
+        console.print("[bold]要点:[/bold]")
+        for p in brief.key_points:
+            console.print(f"  • {p}")
+    if tender.requirements:
+        rt = Table(title="抽取的技术要求", show_lines=False)
+        rt.add_column("参数")
+        rt.add_column("要求")
+        rt.add_column("关键")
+        for r in tender.requirements:
+            req_txt = (
+                f"{r.op.value} {r.target_value:g}{r.unit}" if r.target_value is not None
+                else f"∈ {', '.join(r.target_set or [])}"
+            )
+            rt.add_row(r.param, req_txt, "★" if r.is_critical else "")
+        console.print(rt)
+    if tender.waste_clauses:
+        console.print("[bold]废标/风险摘录(前5条):[/bold]")
+        for c in tender.waste_clauses[:5]:
+            console.print(f"  [yellow]•[/yellow] {c[:120]}")
+
+
+@app.command()
+def rag_search(
+    query: str = typer.Argument(..., help="检索问句"),
+    top: int = typer.Option(5, help="返回条数"),
+    kind: str = typer.Option("", help="过滤: product/qualification/track_record/tender"),
+) -> None:
+    """RAG 检索企业知识库(离线哈希向量 / 有 key 时用 Qwen embedding)。"""
+    kb = build_demo_kb()
+    ret = RagRetriever(kb)
+    hits = ret.search(query, top_k=top, kind=kind or None)
+    console.print(f"[dim]embedder: {get_embedder().name}[/dim]")
+    if not hits:
+        console.print("[yellow]无命中[/yellow]")
+        return
+    t = Table(title=f"RAG 检索 — {query}", show_lines=False)
+    t.add_column("分数", justify="right")
+    t.add_column("类型")
+    t.add_column("来源")
+    t.add_column("片段")
+    for h in hits:
+        t.add_row(f"{h.score:.3f}", h.kind, h.source, h.text[:100] + "…")
+    console.print(t)
+
+
+@app.command(name="tender-bid")
+def tender_bid(
+    tender_path: str = typer.Argument(..., help="招标文件路径"),
+    spec: str = typer.Argument(..., help="选型工况,用于确定应答型号"),
+    output: str = typer.Option("", "--output", "-o", help="导出 Word 路径"),
+    customer: str = typer.Option("", help="客户名称"),
+) -> None:
+    """招标解析 → 选型 → 偏离表 + 废标自检 → 可选 Word 成稿。"""
+    kb = build_demo_kb()
+    qa = QuoteAgent(kb)
+    ba = BidAgent(kb)
+    tender = ba.parse_tender_file(tender_path)
+    oc = qa.quote_text(spec, quantity=1)
+    if oc.selection is None or oc.selection.best is None:
+        console.print("[red]未选到型号[/red]")
+        raise typer.Exit(1)
+    best = oc.selection.best
+    pkg = ba.build_from_tender(tender, best.product, chosen_body=best.chosen_body_material)
+    _render_deviation(pkg.deviation_table)
+    _render_report(pkg.compliance_report)
+    console.print(f"[bold]可否投标:[/bold]"
+                  f"{'[green]是[/green]' if pkg.can_bid else '[red]否[/red]'}")
+    if output:
+        out = ba.export_docx(pkg, output, tender=tender, customer=customer)
+        console.print(f"[green]已导出 Word:[/green]{out}")
+
+
+@app.command(name="export-quote")
+def export_quote(
+    spec: str = typer.Argument(..., help="工况描述"),
+    output: str = typer.Argument(..., help="Word 输出路径"),
+    qty: int = typer.Option(1, help="数量"),
+    tier: str = typer.Option("C", help="客户等级"),
+) -> None:
+    """选型报价并导出 Word 报价单。"""
+    kb = build_demo_kb()
+    agent = QuoteAgent(kb)
+    oc = agent.quote_text(spec, quantity=qty, customer_tier=tier)
+    if oc.quote is None:
+        console.print(f"[red]{oc.error}[/red]")
+        raise typer.Exit(1)
+    from .engines import Quotation
+
+    q = Quotation(customer_tier=tier, lines=[oc.quote])
+    path = agent.export_quotation_docx(q, output)
+    console.print(f"[green]已导出:[/green]{path}")
+
+
+@app.command(name="sync-quote")
+def sync_quote(
+    spec: str = typer.Argument(..., help="工况描述(单行报价)"),
+    customer: str = typer.Option("", help="客户名称"),
+    sync_dir: str = typer.Option("./sync", help="CRM/ERP 文件同步目录"),
+    project: str = typer.Option("", help="ERP 项目编号"),
+) -> None:
+    """报价回填 CRM + 成本同步 ERP(文件适配器演示)。"""
+    kb = build_demo_kb()
+    agent = QuoteAgent(kb)
+    oc = agent.quote_text(spec, quantity=1, customer_tier="B")
+    if oc.quote is None:
+        console.print(f"[red]{oc.error}[/red]")
+        raise typer.Exit(1)
+    from .engines import Quotation
+
+    q = Quotation(customer=customer, lines=[oc.quote])
+    crm = agent.sync_to_crm(q, sync_dir=sync_dir, customer=customer)
+    erp = agent.sync_to_erp(q, sync_dir=sync_dir, project_code=project)
+    console.print(f"[green]CRM[/green] {crm.external_id} → {crm.payload_path}")
+    console.print(f"[green]ERP[/green] {erp.external_id} → {erp.payload_path}")
+
+
+@app.command(name="sync-bid")
+def sync_bid(
+    spec: str = typer.Argument(..., help="工况描述"),
+    sync_dir: str = typer.Option("./sync", help="ERP 同步目录"),
+    project: str = typer.Option("", help="项目编号"),
+) -> None:
+    """投标快照同步 ERP。"""
+    kb = build_demo_kb()
+    qa = QuoteAgent(kb)
+    ba = BidAgent(kb)
+    oc = qa.quote_text(spec)
+    if not oc.selection or not oc.selection.best:
+        console.print("[red]未选到型号[/red]")
+        raise typer.Exit(1)
+    pkg = ba.build_package(oc.selection.best.product, _demo_requirements(),
+                           chosen_body=oc.selection.best.chosen_body_material)
+    adapter = FileSyncAdapter(sync_dir)
+    res = adapter.push_bid_snapshot(pkg, project_code=project)
+    console.print(f"[green]ERP 投标快照[/green] {res.external_id} → {res.payload_path}")
+
+
 @app.command()
 def demo(
     basis: str = typer.Option("2026-06-04", help="报价基准日"),
@@ -302,7 +463,8 @@ def demo(
 
     console.print(Panel.fit(
         "[bold]阀门企业智能标书与报价 Agent — 端到端演示[/bold]\n"
-        "两个 Agent + 共享知识底座;规则保准确、模型保表达;全程离线可跑",
+        f"两个 Agent + 共享知识底座;规则保准确、模型保表达;LLM:{provider_status()}\n"
+        "全程离线可跑;可用 parse-tender / tender-bid / export-quote / sync-* 扩展流程",
         border_style="blue"))
 
     # ---- 哇时刻一:自然语言秒选型 ----

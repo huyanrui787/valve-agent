@@ -22,8 +22,10 @@ from ..engines import (
     SelectionEngine,
     SelectionResult,
 )
+from ..documents import export_quotation_docx
+from ..integrations import CRMClient, ERPClient, FileSyncAdapter, SyncResult
 from ..knowledge import KnowledgeBase
-from ..llm import ConditionParser, LLMProvider, OfflineProvider
+from ..llm import ConditionParser, LLMProvider, get_provider
 from ..models import WorkingCondition
 
 
@@ -54,7 +56,7 @@ class QuoteAgent:
         self.selector = SelectionEngine(kb)
         self.quoter = QuoteEngine(kb)
         self.parser = ConditionParser()
-        self.llm = llm or OfflineProvider()
+        self.llm = llm or get_provider()
 
     def quote_condition(
         self,
@@ -125,6 +127,33 @@ class QuoteAgent:
         latest = max(matches, key=lambda r: r.contract_date)
         return (f"历史参考:{latest.contract_date} 「{latest.project_name}」"
                 f"({latest.customer})含{valve_type},合同额约 {latest.amount/1e4:.0f} 万元")
+
+    def sync_to_crm(
+        self,
+        quote: Quotation,
+        client: CRMClient | None = None,
+        *,
+        customer: str = "",
+        sync_dir: str = "",
+    ) -> SyncResult:
+        """报价单回填 CRM(默认文件适配器)。"""
+        adapter = client or FileSyncAdapter(sync_dir or "./sync")
+        return adapter.push_quotation(quote, customer=customer)
+
+    def sync_to_erp(
+        self,
+        quote: Quotation,
+        client: ERPClient | None = None,
+        *,
+        project_code: str = "",
+        sync_dir: str = "",
+    ) -> SyncResult:
+        """成本数据同步 ERP(默认文件适配器)。"""
+        adapter = client or FileSyncAdapter(sync_dir or "./sync")
+        return adapter.push_quotation_cost(quote, project_code=project_code)
+
+    def export_quotation_docx(self, quote: Quotation, path: str):
+        return export_quotation_docx(quote, path)
 
     @staticmethod
     def _cond_text(c: WorkingCondition) -> str:

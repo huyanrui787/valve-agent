@@ -12,8 +12,32 @@
 cd ~/valve-agent
 uv sync                      # 安装依赖
 uv run valve-agent demo      # 端到端演示(四个"哇时刻")
-uv run pytest                # 43 项测试
+uv run pytest                # 57 项测试
 ```
+
+### Web 前端(正式方案)
+
+后端 FastAPI + 前端 React(Vite)。开发时开两个终端:
+
+```bash
+# 终端 1 — API (默认 http://127.0.0.1:8000)
+uv run valve-api
+
+# 终端 2 — 前端 (默认 http://127.0.0.1:5173, 代理 /api → 后端)
+cd frontend && npm install && npm run dev
+```
+
+浏览器打开 **http://127.0.0.1:5173**。侧边栏可访问:智能报价、标书应答、招标解析、知识检索。
+
+生产一体部署(先构建前端,再由 API 托管静态资源):
+
+```bash
+cd frontend && npm run build
+VALVE_API_RELOAD=0 uv run valve-api
+# 访问 http://127.0.0.1:8000
+```
+
+OpenAPI 文档: http://127.0.0.1:8000/docs
 
 ## 命令
 
@@ -29,6 +53,21 @@ uv run valve-agent bid-compliance "球阀 DN200 PN40 蒸汽 250℃ 电动 API 31
 
 # 批量询价单:逐行选型报价,一张表分钟级出整单
 uv run valve-agent batch examples/inquiry.csv --customer "某水务集团" --tier B
+
+# 招标文件解析(PDF/Word/文本)
+uv run valve-agent parse-tender examples/sample_tender.txt
+
+# 招标解析 → 选型应答 → Word 成稿
+uv run valve-agent tender-bid examples/sample_tender.txt \
+  "球阀 DN200 PN40 蒸汽 250℃ 电动 API 316" -o /tmp/bid.docx
+
+# RAG 检索(离线哈希向量;有 DASHSCOPE_API_KEY 时用 Qwen embedding)
+uv run valve-agent rag-search "球阀 蒸汽 API 电力业绩"
+
+# 报价单 Word 导出 + CRM/ERP 文件同步(联调占位)
+uv run valve-agent export-quote "球阀 DN200 PN40 蒸汽 250℃ 电动 316" /tmp/quote.docx
+uv run valve-agent sync-quote "球阀 DN200 PN40 蒸汽 250℃ 电动 316" --customer 某电厂 --sync-dir ./sync
+uv run valve-agent sync-bid "球阀 DN200 PN40 蒸汽 250℃ 电动 API 316" --sync-dir ./sync
 ```
 
 ## 架构
@@ -44,9 +83,15 @@ src/valve_agent/
 │                  - quote      成本拆解→毛利定价→税费/汇率/折扣
 │                  - compliance 偏离判定(满足/正偏离/负偏离 + 证据链)
 │                  - waste_bid  废标自检 + 资质业绩匹配
-├── llm/           可插拔 LLM:Provider 协议 + 离线 stub + NL 工况解析
-├── agents/        编排层:QuoteAgent(选型+报价+批量) / BidAgent(应答+废标+方案)
+├── llm/           可插拔 LLM:Provider 协议 + 离线 stub + Qwen + NL 工况解析
+├── documents/     招标文件 PDF/Word 加载、规则解析、Word 成稿导出
+├── rag/           向量检索:知识库/招标文本索引(哈希或 Qwen embedding)
+├── integrations/  ERP/CRM 协议 + 文件 JSON 同步适配器(可换 HTTP 实现)
+├── agents/        编排层:QuoteAgent(选型+报价+批量+同步) / BidAgent(解析+应答+导出)
+├── api/           FastAPI REST(/api/*) + valve-api 启动入口
 └── cli.py         typer + rich 命令行
+
+frontend/          React + Vite 单页应用(开发端口 5173)
 ```
 
 ## 设计要点
@@ -61,8 +106,9 @@ src/valve_agent/
 
 ## 当前边界(后续迭代)
 
-- LLM Provider 为离线 stub;接入私有化国产大模型只需实现 `complete()` 接口。
-- 招标文件 PDF/Word 解析、RAG 检索、Word 成稿排版、ERP/CRM 集成为下一阶段。
+- 招标解析为规则+正则抽取,复杂版式/扫描件 PDF 需 OCR 或 LLM 结构化补强。
+- RAG 为内存向量库;生产可换 pgvector / Milvus 等,embedding 已支持 Qwen(`DASHSCOPE_API_KEY`)。
+- ERP/CRM 当前为文件 JSON 占位;生产实现 `CRMClient` / `ERPClient` 协议即可对接真实系统。
 - 报价覆盖标准型号选型;非标定制成本核算待扩展。
 
 > 数据为合理示意值,非真实报价。详见产品方案文档第十一节待确认问题。

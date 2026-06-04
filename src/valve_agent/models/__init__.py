@@ -28,6 +28,7 @@ from .product import (
     TempRange,
 )
 from .request import CompareOp, TenderRequirement, WorkingCondition
+from .tender import ParsedTender, RiskItem, TenderBrief
 
 __all__ = [
     # enums
@@ -56,4 +57,8 @@ __all__ = [
     "WorkingCondition",
     "TenderRequirement",
     "CompareOp",
+    # tender
+    "ParsedTender",
+    "TenderBrief",
+    "RiskItem",
 ]

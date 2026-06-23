@@ -41,3 +41,33 @@ def provider_status() -> str:
     """人类可读的当前 LLM 状态,供 CLI 显示。"""
     p = get_provider()
     return p.name
+
+
+# ---------------------------------------------------------------------------
+# 对话式 Agent(chat / function calling)——需要真实大模型
+# ---------------------------------------------------------------------------
+def chat_available() -> bool:
+    """对话式 Agent 是否可用(是否配置了真实大模型)。
+
+    离线 stub 只能做 complete(),无法驱动多步工具调用,故 chat 必须有 key。
+    """
+    forced = os.environ.get("VALVE_AGENT_LLM", "").lower()
+    if forced == "offline":
+        return False
+    return bool(os.environ.get("DASHSCOPE_API_KEY"))
+
+
+def get_chat_provider():
+    """返回一个支持 chat()/function calling 的 Provider(ChatLLMProvider)。
+
+    无可用真实模型时抛 RuntimeError —— 调用方(API/前端)应据此降级提示,
+    引导用户回退到表单页(对应方案 12.7「降级透明」)。
+    """
+    if not chat_available():
+        raise RuntimeError(
+            "对话式 Agent 需要真实大模型:请设置 DASHSCOPE_API_KEY(或接入私有模型)。"
+            "确定性核心与表单页仍可离线使用。"
+        )
+    from .qwen import QwenProvider
+
+    return QwenProvider()

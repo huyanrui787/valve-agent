@@ -14,6 +14,8 @@ import os
 import urllib.error
 import urllib.request
 
+from .base import ChatMessage, ChatResult, ToolCall
+
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen-plus"
 EMBED_MODEL = "text-embedding-v3"
@@ -64,6 +66,74 @@ class QwenProvider:
             return data["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError) as e:
             raise QwenError(f"Qwen 返回结构异常:{data}") from e
+
+    # ------------------------------------------------------------------
+    def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict] | None = None,
+        system: str = "",
+    ) -> ChatResult:
+        """多轮对话 + 工具调用(function calling),驱动 Agent ReAct 循环。
+
+        走 DashScope OpenAI 兼容端点的 tools / tool_calls 字段。
+        """
+        wire = self._to_wire_messages(messages, system)
+        body: dict = {
+            "model": self.model,
+            "messages": wire,
+            "temperature": 0.2,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        data = self._post("/chat/completions", body)
+        try:
+            msg = data["choices"][0]["message"]
+        except (KeyError, IndexError) as e:
+            raise QwenError(f"Qwen 返回结构异常:{data}") from e
+
+        raw_calls = msg.get("tool_calls") or []
+        calls: list[ToolCall] = []
+        for tc in raw_calls:
+            fn = tc.get("function", {})
+            args_str = fn.get("arguments", "") or "{}"
+            try:
+                args = json.loads(args_str)
+            except json.JSONDecodeError:
+                args = {}
+            calls.append(ToolCall(
+                id=tc.get("id") or f"call_{len(calls)}",
+                name=fn.get("name", ""),
+                arguments=args if isinstance(args, dict) else {},
+            ))
+        return ChatResult(content=(msg.get("content") or "").strip(), tool_calls=calls)
+
+    @staticmethod
+    def _to_wire_messages(messages: list[ChatMessage], system: str) -> list[dict]:
+        """ChatMessage → DashScope/OpenAI 线格式。"""
+        wire: list[dict] = []
+        if system:
+            wire.append({"role": "system", "content": system})
+        for m in messages:
+            if m.role == "assistant" and m.tool_calls:
+                wire.append({
+                    "role": "assistant",
+                    "content": m.content or "",
+                    "tool_calls": [
+                        {"id": c.id, "type": "function",
+                         "function": {"name": c.name,
+                                      "arguments": json.dumps(c.arguments, ensure_ascii=False)}}
+                        for c in m.tool_calls
+                    ],
+                })
+            elif m.role == "tool":
+                wire.append({"role": "tool", "tool_call_id": m.tool_call_id,
+                             "content": m.content})
+            else:
+                wire.append({"role": m.role, "content": m.content})
+        return wire
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """文本向量化,供 RAG 使用。"""

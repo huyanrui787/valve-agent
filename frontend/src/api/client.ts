@@ -1,7 +1,12 @@
 import type {
+  AgentEvent,
+  ChatStatus,
   Health,
   LineOutcome,
   ParsedTender,
+  ProjectDetail,
+  ProjectList,
+  ProjectSave,
   RagHit,
   SelectionResult,
   TenderBidResponse,
@@ -129,4 +134,109 @@ export function saveBlob(blob: Blob, filename: string) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// 标书项目记录(内容生成后留存,可重新打开续编)
+// ---------------------------------------------------------------------------
+export async function listProjects(): Promise<ProjectList> {
+  return json(await fetch(`${BASE}/api/projects`));
+}
+
+export async function getProject(id: string): Promise<ProjectDetail> {
+  return json(await fetch(`${BASE}/api/projects/${id}`));
+}
+
+export async function createProject(body: ProjectSave): Promise<ProjectDetail> {
+  return json(
+    await fetch(`${BASE}/api/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function updateProject(
+  id: string,
+  body: ProjectSave,
+): Promise<ProjectDetail> {
+  return json(
+    await fetch(`${BASE}/api/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 对话式 Agent(SSE over POST)
+// ---------------------------------------------------------------------------
+export async function fetchChatStatus(): Promise<ChatStatus> {
+  return json(await fetch(`${BASE}/api/chat/status`));
+}
+
+/** 读取 POST 返回的 SSE 流,逐个事件回调。EventSource 只支持 GET,故手动解析。 */
+async function readSse(
+  res: Response,
+  onEvent: (ev: AgentEvent) => void,
+): Promise<void> {
+  if (!res.ok || !res.body) {
+    throw new Error(`SSE 连接失败:${res.status} ${res.statusText}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE 以空行分隔事件块
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      let type = "";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) type = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data = line.slice(6);
+      }
+      if (!type) continue;
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = data ? JSON.parse(data) : {};
+      } catch {
+        parsed = {};
+      }
+      onEvent({ type: type as AgentEvent["type"], ...parsed });
+    }
+  }
+}
+
+export async function streamChat(
+  message: string,
+  onEvent: (ev: AgentEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  await readSse(res, onEvent);
+}
+
+export async function streamChatConfirm(
+  sessionId: string,
+  callId: string,
+  approved: boolean,
+  onEvent: (ev: AgentEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/chat/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, call_id: callId, approved }),
+  });
+  await readSse(res, onEvent);
 }

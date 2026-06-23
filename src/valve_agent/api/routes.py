@@ -5,12 +5,18 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from . import services
+from . import chat_service, services
 from .schemas import (
     BatchRequest,
     BatchResponse,
+    BidProjectDetail,
+    BidProjectList,
+    BidProjectSave,
+    ChatConfirmRequest,
+    ChatRequest,
+    ChatStatusResponse,
     HealthResponse,
     QuoteRequest,
     RagSearchRequest,
@@ -121,3 +127,59 @@ def api_sync_bid(req: SyncBidRequest) -> SyncResponse:
         return services.sync_bid(req)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# 标书项目记录(内容生成后留存,可重新打开续编)
+# ---------------------------------------------------------------------------
+@router.post("/projects", response_model=BidProjectDetail)
+def api_create_project(req: BidProjectSave) -> BidProjectDetail:
+    return services.create_project(req)
+
+
+@router.get("/projects", response_model=BidProjectList)
+def api_list_projects() -> BidProjectList:
+    return services.list_projects()
+
+
+@router.get("/projects/{project_id}", response_model=BidProjectDetail)
+def api_get_project(project_id: str) -> BidProjectDetail:
+    try:
+        return services.get_project(project_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"项目不存在:{project_id}") from e
+
+
+@router.put("/projects/{project_id}", response_model=BidProjectDetail)
+def api_update_project(project_id: str, req: BidProjectSave) -> BidProjectDetail:
+    try:
+        return services.update_project(project_id, req)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"项目不存在:{project_id}") from e
+
+
+# ---------------------------------------------------------------------------
+# 对话式 Agent(SSE 流式)
+# ---------------------------------------------------------------------------
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@router.get("/chat/status", response_model=ChatStatusResponse)
+def api_chat_status() -> ChatStatusResponse:
+    return ChatStatusResponse(**chat_service.chat_status())
+
+
+@router.post("/chat")
+def api_chat(req: ChatRequest) -> StreamingResponse:
+    """开启一轮对话,SSE 流式返回事件(thinking/tool_call/tool_result/await_confirm/message)。"""
+    return StreamingResponse(
+        chat_service.start_chat_stream(req.message),
+        media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.post("/chat/confirm")
+def api_chat_confirm(req: ChatConfirmRequest) -> StreamingResponse:
+    """对挂起的写操作确认/拒绝后,继续 SSE 流式推进。"""
+    return StreamingResponse(
+        chat_service.confirm_chat_stream(req.session_id, req.call_id, req.approved),
+        media_type="text/event-stream", headers=_SSE_HEADERS)

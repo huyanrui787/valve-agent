@@ -78,6 +78,7 @@ export interface BidPackage {
 
 export interface ParsedTender {
   source: string;
+  raw_text?: string;
   brief: {
     title: string;
     bid_deadline?: string | null;
@@ -112,4 +113,66 @@ export interface RagHit {
   source: string;
   kind: string;
   score: number;
+}
+
+// ---- 标书项目记录 ----
+export interface ProjectSummary {
+  id: string;
+  project_name: string;
+  status: string;
+  word_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  spec: string;
+  snapshot: Record<string, unknown>;
+}
+
+export interface ProjectList {
+  items: ProjectSummary[];
+  total: number;
+}
+
+export interface ProjectSave {
+  project_name: string;
+  word_count?: number;
+  spec?: string;
+  status?: string;
+  snapshot?: Record<string, unknown>;
+}
+export interface ChatStatus {
+  available: boolean;
+}
+
+export type AgentEventType =
+  | "session"
+  | "thinking"
+  | "tool_call"
+  | "tool_result"
+  | "await_confirm"
+  | "message"
+  | "error"
+  | "done";
+
+export interface AgentEvent {
+  type: AgentEventType;
+  step?: number;
+  // session / done
+  session_id?: string;
+  // thinking / message
+  text?: string;
+  // tool_call / tool_result / await_confirm
+  call_id?: string;
+  tool?: string;
+  arguments?: Record<string, unknown>;
+  is_write?: boolean;
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
+  prompt?: string;
+  // error
+  message?: string;
+  downgrade?: boolean;
 }

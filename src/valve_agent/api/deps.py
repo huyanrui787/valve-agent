@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from ..agents import BidAgent, QuoteAgent
 from ..knowledge import KnowledgeBase, build_demo_kb
+from ..projects import BidProjectStore
 from ..rag import RagRetriever
 
 
@@ -23,3 +24,8 @@ def get_quote_agent() -> QuoteAgent:
 def get_bid_agent() -> BidAgent:
     kb = get_kb()
     return BidAgent(kb, retriever=RagRetriever(kb))
+
+
+@lru_cache
+def get_project_store() -> BidProjectStore:
+    return BidProjectStore()

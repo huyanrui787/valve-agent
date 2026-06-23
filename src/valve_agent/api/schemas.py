@@ -96,3 +96,50 @@ class SyncResponse(BaseModel):
     crm: SyncResult | None = None
     erp_cost: SyncResult | None = None
     erp_bid: SyncResult | None = None
+
+
+class BidProjectSave(BaseModel):
+    """创建/更新标书项目记录的入参。snapshot 为前端续编所需的整份状态。"""
+
+    project_name: str = "未命名标书"
+    word_count: int = 0
+    spec: str = ""
+    status: str = "completed"
+    snapshot: dict = Field(default_factory=dict)
+
+
+class BidProjectSummary(BaseModel):
+    """列表项:只含展示与排序所需的元数据,不含 snapshot。"""
+
+    id: str
+    project_name: str
+    status: str
+    word_count: int
+    created_at: str
+    updated_at: str
+
+
+class BidProjectDetail(BidProjectSummary):
+    """详情:在元数据基础上带回 spec 与续编所需的 snapshot。"""
+
+    spec: str = ""
+    snapshot: dict = Field(default_factory=dict)
+
+
+class BidProjectList(BaseModel):
+    items: list[BidProjectSummary]
+    total: int
+
+
+class ChatStatusResponse(BaseModel):
+    available: bool
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatConfirmRequest(BaseModel):
+    session_id: str
+    call_id: str
+    approved: bool

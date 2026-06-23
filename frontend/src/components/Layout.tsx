@@ -21,8 +21,8 @@ export function Layout() {
           <NavLink to="/" end>
             智能报价
           </NavLink>
-          <NavLink to="/bid">标书应答</NavLink>
-          <NavLink to="/tender">招标解析</NavLink>
+          <NavLink to="/bid">标书智能体</NavLink>
+          <NavLink to="/projects">我的标书</NavLink>
           <NavLink to="/rag">知识检索</NavLink>
         </nav>
         <div className="status-pill">

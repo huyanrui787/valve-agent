@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +16,17 @@ from ..models.tender import ParsedTender
 
 if TYPE_CHECKING:
     from ..agents.bid_agent import BidPackage
+
+
+def _add_inline_bold(paragraph, text: str) -> None:
+    """将含 **bold** 标记的文本写入段落，粗体部分设为 bold run。"""
+    parts = re.split(r"(\*\*[^*]+\*\*)", text)
+    for part in parts:
+        if part.startswith("**") and part.endswith("**"):
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        else:
+            paragraph.add_run(part)
 
 
 def export_bid_docx(
@@ -41,13 +53,20 @@ def export_bid_docx(
     if tender and tender.brief.bid_deadline:
         meta.add_run(f"投标截止:{tender.brief.bid_deadline.isoformat()}\n")
 
+    _CN = "一二三四五六七八九十"
+
+    def _h(n: int, title: str) -> None:
+        doc.add_heading(f"{_CN[n-1]}、{title}", level=1)
+
+    sec = 1  # 章节计数器
+
     if tender and tender.brief.key_points:
-        doc.add_heading("一、招标要点清单", level=1)
+        _h(sec, "招标要点清单"); sec += 1
         for p in tender.brief.key_points:
             doc.add_paragraph(p, style="List Bullet")
 
     if tender and tender.brief.risks:
-        doc.add_heading("二、废标风险预警", level=1)
+        _h(sec, "废标风险预警"); sec += 1
         rt = doc.add_table(rows=1, cols=3)
         rt.style = "Table Grid"
         hdr = rt.rows[0].cells
@@ -60,7 +79,7 @@ def export_bid_docx(
             row[1].text = risk.clause[:80]
             row[2].text = risk.summary[:120]
 
-    doc.add_heading("三、技术偏离表", level=1)
+    _h(sec, "技术偏离表"); sec += 1
     dt = package.deviation_table
     t = doc.add_table(rows=1, cols=6)
     t.style = "Table Grid"
@@ -80,14 +99,14 @@ def export_bid_docx(
             for run in row[4].paragraphs[0].runs:
                 run.font.bold = True
 
-    doc.add_heading("四、废标风险体检", level=1)
+    _h(sec, "废标风险体检"); sec += 1
     for item in package.compliance_report.items:
         p = doc.add_paragraph()
         p.add_run(f"[{item.level.value}] {item.name}: ").bold = True
         p.add_run(item.detail)
 
     if package.matched_qualifications:
-        doc.add_heading("五、资质匹配", level=1)
+        _h(sec, "资质匹配"); sec += 1
         for cat, q in package.matched_qualifications.items():
             if q:
                 doc.add_paragraph(
@@ -98,7 +117,7 @@ def export_bid_docx(
                 doc.add_paragraph(f"{cat}: 未匹配到有效资质", style="List Bullet")
 
     if package.matched_records:
-        doc.add_heading("六、业绩匹配", level=1)
+        _h(sec, "业绩匹配"); sec += 1
         for r in package.matched_records[:10]:
             doc.add_paragraph(
                 f"{r.contract_date} {r.project_name} — {r.customer} "
@@ -107,10 +126,29 @@ def export_bid_docx(
             )
 
     if package.tech_proposal:
-        doc.add_heading("七、技术方案概述", level=1)
+        _h(sec, "技术方案概述"); sec += 1
         for para in package.tech_proposal.split("\n"):
-            if para.strip():
-                doc.add_paragraph(para.strip())
+            stripped = para.strip()
+            if not stripped:
+                continue
+            # Markdown 标题 → Word heading
+            if stripped.startswith("### "):
+                doc.add_heading(stripped[4:], level=3)
+            elif stripped.startswith("## "):
+                doc.add_heading(stripped[3:], level=2)
+            elif stripped.startswith("# "):
+                doc.add_heading(stripped[2:], level=2)
+            # 带序号的大标题：一、 二、 三、...
+            elif len(stripped) > 2 and stripped[1] == "、":
+                h = doc.add_heading(stripped, level=2)
+            # Markdown 列表项（– / - / • / ✅ / ⚠️ 开头）
+            elif stripped.startswith(("– ", "- ", "• ", "✅ ", "⚠️ ", "* ")):
+                bullet_text = stripped.lstrip("–-•✅⚠️* ").strip()
+                p = doc.add_paragraph(style="List Bullet")
+                _add_inline_bold(p, bullet_text)
+            else:
+                p = doc.add_paragraph()
+                _add_inline_bold(p, stripped)
 
     doc.add_paragraph()
     foot = doc.add_paragraph("— 本文件由 valve-agent 自动生成,供工程师复核定稿 —")

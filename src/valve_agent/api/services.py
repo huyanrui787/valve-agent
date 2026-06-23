@@ -18,10 +18,14 @@ from ..integrations import FileSyncAdapter
 from ..llm import ConditionParser, provider_status
 from ..models.tender import ParsedTender
 from ..rag import RagRetriever, get_embedder as _get_embedder
-from .deps import get_bid_agent, get_quote_agent
+from .deps import get_bid_agent, get_project_store, get_quote_agent
 from .schemas import (
     BatchRequest,
     BatchResponse,
+    BidProjectDetail,
+    BidProjectList,
+    BidProjectSave,
+    BidProjectSummary,
     HealthResponse,
     QuoteRequest,
     RagSearchRequest,
@@ -194,3 +198,51 @@ def sync_bid(req: SyncBidRequest) -> SyncResponse:
     adapter = FileSyncAdapter(req.sync_dir)
     erp_bid = adapter.push_bid_snapshot(pkg, project_code=req.project_code)
     return SyncResponse(erp_bid=erp_bid)
+
+
+# ---------------------------------------------------------------------------
+# 标书项目记录(内容生成后留存,可重新打开续编)
+# ---------------------------------------------------------------------------
+def _to_summary(p) -> BidProjectSummary:
+    return BidProjectSummary(
+        id=p.id, project_name=p.project_name, status=p.status,
+        word_count=p.word_count, created_at=p.created_at, updated_at=p.updated_at,
+    )
+
+
+def _to_detail(p) -> BidProjectDetail:
+    return BidProjectDetail(
+        id=p.id, project_name=p.project_name, status=p.status,
+        word_count=p.word_count, created_at=p.created_at, updated_at=p.updated_at,
+        spec=p.spec, snapshot=p.snapshot,
+    )
+
+
+def create_project(req: BidProjectSave) -> BidProjectDetail:
+    p = get_project_store().create(
+        project_name=req.project_name, word_count=req.word_count,
+        spec=req.spec, status=req.status, snapshot=req.snapshot,
+    )
+    return _to_detail(p)
+
+
+def list_projects() -> BidProjectList:
+    items = [_to_summary(p) for p in get_project_store().list()]
+    return BidProjectList(items=items, total=len(items))
+
+
+def get_project(project_id: str) -> BidProjectDetail:
+    p = get_project_store().get(project_id)
+    if p is None:
+        raise KeyError(project_id)
+    return _to_detail(p)
+
+
+def update_project(project_id: str, req: BidProjectSave) -> BidProjectDetail:
+    p = get_project_store().update(
+        project_id, project_name=req.project_name, word_count=req.word_count,
+        spec=req.spec, status=req.status, snapshot=req.snapshot,
+    )
+    if p is None:
+        raise KeyError(project_id)
+    return _to_detail(p)

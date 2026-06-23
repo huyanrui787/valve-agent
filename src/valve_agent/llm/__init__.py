@@ -9,6 +9,7 @@ from .base import (
     LLMProvider,
     ToolCall,
 )
+from .deepseek import DeepSeekError, DeepSeekProvider
 from .factory import chat_available, get_chat_provider, get_provider, provider_status
 from .mock import MockChatProvider
 from .offline import OfflineProvider
@@ -23,6 +24,8 @@ __all__ = [
     "ToolCall",
     "OfflineProvider",
     "MockChatProvider",
+    "DeepSeekProvider",
+    "DeepSeekError",
     "QwenProvider",
     "QwenError",
     "ConditionParser",
